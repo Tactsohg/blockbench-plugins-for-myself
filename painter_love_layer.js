@@ -55,6 +55,7 @@
                 uniform sampler2D tex0;
                 uniform sampler2D tex1;
                 uniform sampler2D tex2;
+                uniform sampler2D tex3;
                 
                 varying vec2 uv;
 
@@ -63,8 +64,9 @@
                     vec4 Ca = texture2D(tex0, uv);
                     vec4 Cb = texture2D(tex1, uv);
                     vec4 Cc = texture2D(tex2, uv);
+                    vec4 Cd = texture2D(tex3, uv);
 
-                    vec3 c = Ca.rgb * mix(vec3(1.0), Cb.rgb, Cb.a) + Cc.rgb * Cc.a;
+                    vec3 c = mix(Ca.rgb * mix(vec3(1.0), Cb.rgb, Cb.a), Cc.rgb, Cc.a) + Cd.rgb * Cd.a;
                     gl_FragColor = vec4(c, Ca.a);
                     if (gl_FragColor.a < 1.0) discard;
                 }
@@ -82,7 +84,7 @@
                 GLES.vertexAttribPointer(location, 2, GLES.FLOAT, false, 0, 0);
                 GLES.enableVertexAttribArray(location);
                 GLES.clearColor(0.0, 0.0, 0.0, 0.0);
-        
+
                 GLES.activeTexture(GLES.TEXTURE0)
                 GLES.bindTexture(GLES.TEXTURE_2D, GLES.createTexture())
                 GLES.texParameteri(GLES.TEXTURE_2D, GLES.TEXTURE_MAG_FILTER, GLES.NEAREST)
@@ -98,6 +100,11 @@
                 GLES.texParameteri(GLES.TEXTURE_2D, GLES.TEXTURE_MAG_FILTER, GLES.NEAREST)
                 GLES.texParameteri(GLES.TEXTURE_2D, GLES.TEXTURE_MIN_FILTER, GLES.NEAREST)
                 GLES.uniform1i(GLES.getUniformLocation(program, 'tex2'), 2)
+                GLES.activeTexture(GLES.TEXTURE3)
+                GLES.bindTexture(GLES.TEXTURE_2D, GLES.createTexture())
+                GLES.texParameteri(GLES.TEXTURE_2D, GLES.TEXTURE_MAG_FILTER, GLES.NEAREST)
+                GLES.texParameteri(GLES.TEXTURE_2D, GLES.TEXTURE_MIN_FILTER, GLES.NEAREST)
+                GLES.uniform1i(GLES.getUniformLocation(program, 'tex3'), 3)
             }()
 
             origin = Canvas.getLayeredMaterial
@@ -154,6 +161,7 @@
                     uniform sampler2D t0;
                     uniform sampler2D t1;
                     uniform sampler2D t2;
+                    uniform sampler2D t3;
         
                     uniform bool SHADE;
         
@@ -164,10 +172,11 @@
                     void main(void)
                     {
                         vec4 Ca = texture2D(t0, vUv);
-                        vec4 Cb = texture2D(t1, vUv); // shadow
+                        vec4 Cb = texture2D(t1, vUv); // lighting
                         vec4 Cc = texture2D(t2, vUv); // specular
+                        vec4 Cd = texture2D(t3, vUv); // clearcoat
         
-                        vec3 c = Ca.rgb * mix(vec3(1.0), Cb.rgb, Cb.a) + Cc.rgb * Cc.a;
+                        vec3 c = mix(Ca.rgb * mix(vec3(1.0), Cb.rgb, Cb.a), Cc.rgb, Cc.a) + Cd.rgb * Cd.a;
                         gl_FragColor= vec4(lift + c * light, Ca.a);
         
                         if (lift > 0.2) {
@@ -186,17 +195,28 @@
                     SHADE: {type: 'bool', value: settings.shading.value},
                     t0: {type: 't', value: null},
                     t1: {type: 't', value: null},
-                    t2: {type: 't', value: null}
+                    t2: {type: 't', value: null},
+                    t3: {type: 't', value: null}
                 }
                 let i = 0
                 if (layers instanceof Array == false) layers = Texture.all
+                let name = null
                 layers.forEach(texture => {
-                    if (texture.visible && i < 3) {
-                        uniforms[`t${i}`].value = texture.getMaterial().map
-                        i++
+                    if (!name && texture.visible) {
+                        uniforms['t0'].value = texture.getMaterial().map
+                        name = texture.name
                     }
                 })
-        
+                layers.forEach(texture => {
+                    if (texture.name === name + '#lighting') {
+                        uniforms['t1'].value = texture.getMaterial().map
+                    } else if (texture.name === name + '#specular') {
+                        uniforms['t2'].value = texture.getMaterial().map
+                    } else if (texture.name === name + '#clearcoat') {
+                        uniforms['t3'].value = texture.getMaterial().map
+                    }
+                })
+
                 var material_shh = new THREE.ShaderMaterial({
                   uniforms: uniforms,
                   vertexShader: vertShader,
@@ -215,17 +235,23 @@
                 var lighting = new Texture({
                     mode: 'bitmap',
                     keep_size: true,
-                    name: 'lighting',
+                    name: selected.name + '#lighting',
                 })
 
                 var specular = new Texture({
                     mode: 'bitmap',
                     keep_size: true,
-                    name: 'specular',
+                    name: selected.name + '#specular',
+                })
+
+                var clearcoat = new Texture({
+                    mode: 'bitmap',
+                    keep_size: true,
+                    name: selected.name + '#clearcoat',
                 })
 
                 TextureGenerator.generateBlank(selected.height, selected.width, '#fff', blob => lighting.fromDataURL(blob).add(false))
-                TextureGenerator.generateBlank(selected.height, selected.width, '#00000000', blob => specular.fromDataURL(blob).add(false))
+                TextureGenerator.generateBlank(selected.height, selected.width, '#00000000', blob => {specular.fromDataURL(blob).add(false);clearcoat.fromDataURL(blob).add(false)})
 
                 Texture.selected.render_mode = 'layered'
                 Texture.selected.updateMaterial()
@@ -233,23 +259,42 @@
                 lighting.updateMaterial()
                 specular.render_mode = 'layered'
                 specular.updateMaterial()
+                clearcoat.render_mode = 'layered'
+                clearcoat.updateMaterial()
 
                 Canvas.updateLayeredTextures()
 
-                Undo.finishEdit('Create textures', {textures: [selected, lighting, specular], bitmap: true})
+                Undo.finishEdit('Create textures', {textures: [selected, lighting, specular, clearcoat], bitmap: true})
             }
 
             let merge = function() {
-                let i = 0
-                let tex = [null, null, null]
+                let selected = Texture.selected
+                let name = selected.name
+
+                if (name.includes('#')) {
+                    name = name.substring(0, name.indexOf('#'))
+                }
+
                 Texture.all.forEach(texture => {
-                    if (texture.render_mode == 'layered' && texture.visible && i < 3) {
-                        tex[i] = texture
-                        i++
+                    if (texture.name == name) {
+                        selected = texture
                     }
                 })
 
-                if (i === 3) {
+                let tex = [selected, null, null, null]
+                Texture.all.forEach(texture => {
+                    if (texture.render_mode == 'layered') {
+                        if (texture.name === name + '#lighting') {
+                            tex[1] = texture
+                        } else if (texture.name === name + '#specular') {
+                            tex[2] = texture
+                        } else if (texture.name === name + '#clearcoat') {
+                            tex[3] = texture
+                        }
+                    }
+                })
+
+                if (tex[0] && tex[1] && tex[2] && tex[3]) {
                     canvas.width = tex[0].width
                     canvas.height = tex[0].height
                     GLES.activeTexture(GLES.TEXTURE0)
@@ -258,6 +303,8 @@
                     GLES.texImage2D(GLES.TEXTURE_2D, 0, GLES.RGBA, GLES.RGBA, GLES.UNSIGNED_BYTE, tex[1].img)
                     GLES.activeTexture(GLES.TEXTURE2)
                     GLES.texImage2D(GLES.TEXTURE_2D, 0, GLES.RGBA, GLES.RGBA, GLES.UNSIGNED_BYTE, tex[2].img)
+                    GLES.activeTexture(GLES.TEXTURE3)
+                    GLES.texImage2D(GLES.TEXTURE_2D, 0, GLES.RGBA, GLES.RGBA, GLES.UNSIGNED_BYTE, tex[3].img)
                     GLES.viewport(0, 0, canvas.width, canvas.height)
                     GLES.clear(GLES.COLOR_BUFFER_BIT);
                     GLES.drawArrays(GLES.TRIANGLE_STRIP, 0, 4);
@@ -269,11 +316,14 @@
                     tex[1].updateMaterial()
                     tex[2].render_mode = 'default'
                     tex[2].updateMaterial()
-                    Canvas.updateLayeredTextures();
+                    tex[3].render_mode = 'default'
+                    tex[3].updateMaterial()
+                    Canvas.updateLayeredTextures()
 
                     tex[0].updateSource(canvas.toDataURL()).select()
                     tex[1].remove(true)
                     tex[2].remove(true)
+                    tex[3].remove(true)
                     Undo.finishEdit('Merge layered textures', {textures: [tex[0]], bitmap: true, selected_texture: true})
                 }
             }
